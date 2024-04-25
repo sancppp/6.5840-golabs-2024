@@ -69,14 +69,17 @@ func (ck *Clerk) Get(key string) string {
 func (ck *Clerk) PutAppend(key string, value string, op string) string {
 	// You will have to modify this function.
 	args := PutAppendArgs{
-		Key:      key,
-		Value:    value,
-		UUID:     nrand(),
+		Key:   key,
+		Value: value,
+		UUID:  nrand(),
+		// 给server提供上一次请求的uuid，提醒server删除这次请求之前的记录
+		// TODO: 这里可以改为时间戳，server删除这个时间戳之前的记录 or 多级缓存结构
 		LastUUID: ck.lastOpUUID,
 	}
 	reply := PutAppendReply{}
 	for ok := ck.server.Call("KVServer."+op, &args, &reply); !ok; ok = ck.server.Call("KVServer."+op, &args, &reply) {
 	}
+	//本次请求成功后，记录这次请求的uuid
 	ck.lastOpUUID = args.UUID
 	return reply.Value
 }
