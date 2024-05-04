@@ -1,12 +1,13 @@
 package raft
 
-import "log"
-
 // Debugging
-const Debug = false
+const ADebug = false
+const BDebug = false
+const CDebug = false
+const DDebug = true
 
-func DPrintf(format string, a ...interface{}) {
-	if Debug {
-		log.Printf(format, a...)
-	}
-}
+// func DPrintf(format string, a ...interface{}) {
+// 	if Debug {
+// 		log.Printf(format, a...)
+// 	}
+// }
