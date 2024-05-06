@@ -4,7 +4,7 @@ package raft
 const ADebug = false
 const BDebug = false
 const CDebug = false
-const DDebug = true
+const DDebug = false
 
 // func DPrintf(format string, a ...interface{}) {
 // 	if Debug {
