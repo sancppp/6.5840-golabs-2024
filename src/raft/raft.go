@@ -141,8 +141,8 @@ func (rf *Raft) getIndex(index int) int {
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
 	// Your code here (2A).
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	// rf.mu.Lock()
+	// defer rf.mu.Unlock()
 	return rf.currentTerm, rf.role == LEADER
 }
 
@@ -173,9 +173,6 @@ func (rf *Raft) persist() {
 	e.Encode(rf.log)
 	e.Encode(rf.lastIncludedIndex)
 	e.Encode(rf.lastIncludedTerm)
-	for index, log := range rf.log {
-		rf.DPrintln(CDebug, "persist ", index, *log)
-	}
 	rf.DPrintln(CDebug, "persist ", rf.commitIndex.Load())
 	raftstate := w.Bytes()
 	//3C:For now, pass nil as the second argument to persister.Save()
@@ -209,16 +206,25 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 	// 下标偏移1
 	index -= 1
-	rf.DPrintln(DDebug, "Snapshot:[ 0 :", index, "]")
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	rf.snapshot = snapshot
-	pre := rf.lastIncludedIndex
-	rf.lastIncludedTerm = rf.log[rf.getIndex(index)].Term
-	rf.lastIncludedIndex = index
+	// 这个函数需要立刻返回，否则会阻塞judge的apply channel工作，不处理apply message，导致阻塞死锁。
+	// applyCh无缓冲
+	go func(index int) {
+		rf.mu.Lock()
+		defer rf.mu.Unlock()
+		rf.DPrintln(DDebug, "Snapshot:[ 0 :", index, "]")
+		rf.snapshot = snapshot
+		pre := rf.lastIncludedIndex
+		real_idx := rf.getIndex(index)
+		if real_idx < 0 {
+			rf.logger.Println("Snapshot real_idx: ", real_idx)
+			return
+		}
+		rf.lastIncludedTerm = rf.log[rf.getIndex(index)].Term
+		rf.lastIncludedIndex = index
 
-	//裁剪切片
-	rf.log = rf.log[rf.lastIncludedIndex-pre:]
+		//裁剪切片
+		rf.log = rf.log[rf.lastIncludedIndex-pre:]
+	}(index)
 }
 
 // example RequestVote RPC arguments structure.
@@ -392,7 +398,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	defer rf.mu.Unlock()
 	defer rf.persist()
 
-	rf.DPrintln(CDebug, "AppendEntries ", rf.currentTerm, args.LeaderId, args.Term, args.Term < rf.currentTerm)
+	rf.DPrintln(DDebug, "AppendEntries ", rf.currentTerm, args.LeaderId, args.Term, args.Term < rf.currentTerm)
 	//1. Reply false if term < currentTerm (§5.1)
 	if args.Term < rf.currentTerm {
 		reply.Success = false
@@ -412,16 +418,19 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		panic("real_prevLogIndex < -1")
 	}
 	if len(rf.log) <= real_prevLogIndex {
+		//说明此时已经被压缩了，
+		rf.DPrintln(DDebug, "!!! ", "real_prevLogIndex: ", real_prevLogIndex, "len(rf.log): ", len(rf.log))
+		rf.DPrintln(DDebug, "lastIncludedIndex: ", rf.lastIncludedIndex)
 		reply.Success = false
 		reply.Term = rf.currentTerm
 		return
 	}
-	rf.DPrintln(DDebug, "okk")
 	// 3. If an existing entry conflicts with a new one (same index but different terms), delete the existing entry and all that follow it (§5.3)
+
 	if real_prevLogIndex != -1 && rf.log[real_prevLogIndex].Term != args.PrevLogTerm {
 		reply.Success = false
 		reply.Term = rf.currentTerm
-		rf.DPrintln(CDebug, "conflicts")
+		rf.DPrintln(DDebug, "conflicts", "real_prevLogIndex", *rf.log[real_prevLogIndex])
 		rf.log = rf.log[:real_prevLogIndex]
 		return
 	}
@@ -436,6 +445,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.LeaderCommitIndex > int(rf.commitIndex.Load()) {
 		rf.commitIndex.Store(int32(min(args.LeaderCommitIndex, rf.lastIncludedIndex+len(rf.log))))
 	}
+	rf.DPrintln(DDebug, "Append end")
 }
 
 func (rf *Raft) SendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -457,15 +467,14 @@ func (rf *Raft) SendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	term, isLeader := rf.GetState()
 	if !isLeader || rf.killed() {
 		return -1, -1, false
 	}
 	index := -1
 
-	rf.mu.Lock()
-
-	defer rf.mu.Unlock()
 	defer rf.persist()
 
 	index = rf.lastIncludedIndex + len(rf.log) + 1
@@ -475,9 +484,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Term:    rf.currentTerm,
 		Command: command,
 	})
-	for idx, log := range rf.log {
-		rf.DPrintln(BDebug, "Start ", idx, *log)
-	}
 
 	return index + 1, term, isLeader
 }
@@ -639,7 +645,8 @@ func (rf *Raft) sendAppend() {
 			} else {
 				//append失败，需要减少nextIndex[peer]并重试
 				//TODO nextIndex的回退逻辑
-				rf.nextIndex[index] = max(0, rf.nextIndex[index]-5, rf.lastIncludedIndex+1)
+				rf.nextIndex[index] = max(0, rf.nextIndex[index]-5)
+				// rf.nextIndex[index] = max(0, rf.nextIndex[index]-5, rf.lastIncludedIndex+1)
 			}
 			rf.mu.Unlock()
 		}(index)
@@ -662,19 +669,20 @@ func (rf *Raft) ticker() {
 		// Check if a leader election should be started.
 
 		rf.mu.Lock()
-
 		curr_role := rf.role
 		rf.mu.Unlock()
 		rf.DPrintln(ADebug, "ticker")
 		switch curr_role {
 		case FOLLOWER:
 			{
-				if rf.voteEvent.Load() {
+				_voteEvent := rf.voteEvent.Load()
+				_appendEvent := rf.appendEvent.Load()
+				if _voteEvent {
 					// 收到了投票事件，刷新选举计时器
 					rf.DPrintln(ADebug, "收到投票事件")
 					rf.voteEvent.Store(false)
 					time.Sleep(time.Duration(VoteTimeoutMs+rand.Intn(VoteTimeoutMs)) * time.Millisecond)
-				} else if rf.appendEvent.Load() {
+				} else if _appendEvent {
 					//收到了同步事件
 					rf.DPrintln(ADebug, "收到同步事件")
 					rf.appendEvent.Store(false)
@@ -683,7 +691,7 @@ func (rf *Raft) ticker() {
 					//选举计时器超时，成为Candidate。立刻再进入一次循环，发起选举
 
 					rf.mu.Lock()
-
+					rf.DPrintln(BDebug, "!!!")
 					rf.switchRoleTo(CANDIDATE)
 					rf.mu.Unlock()
 				}
@@ -730,6 +738,12 @@ func (rf *Raft) startElection() {
 	//发起一轮选举
 	//1.1 增加 currentTerm
 	rf.mu.Lock()
+	//ping耗时了，再次检测自己是否是Candidate
+	if rf.role != CANDIDATE {
+		rf.mu.Unlock()
+		return
+	}
+
 	rf.currentTerm++
 	//1.2 选举自己
 	rf.votedFor = rf.me
@@ -797,22 +811,24 @@ func (rf *Raft) applyMsg() {
 			// lastApplied初始化是-1
 			//apply log[lastApplied+1, commitIndex]
 			rf.DPrintln(DDebug, "APPLY: ", l+1, r)
-			// rf.logger.Println("APPLY: ", l+1, r)
+			rf.mu.Lock()
 			for i := l + 1; i <= r; i++ {
-				rf.mu.Lock()
-				if rf.getIndex(i) < 0 {
-					rf.logger.Println(i, rf.getIndex(i))
+				//如果不在for循环内释放锁，3D快照会卡死 已解决
+				// rf.logger.Println("??", i, l, r, rf.lastIncludedIndex)
+				real_i := rf.getIndex(i)
+				if real_i < 0 {
+					rf.logger.Println(i, real_i)
 					continue
 				}
-				rf.DPrintln(DDebug, "apply: ", i, "real: ", rf.getIndex(i), rf.log[rf.getIndex(i)].Command)
+				rf.DPrintln(DDebug, "apply: ", i, "real: ", real_i, rf.log[real_i].Command)
 				rf.applyCh <- ApplyMsg{
 					CommandValid: true,
-					Command:      rf.log[rf.getIndex(i)].Command,
+					Command:      rf.log[real_i].Command,
 					CommandIndex: i + 1,
 				}
-				rf.mu.Unlock()
-				time.Sleep(10 * time.Millisecond)
+				// time.Sleep(10 * time.Millisecond)
 			}
+			rf.mu.Unlock()
 			rf.lastApplied.Store(int32(r))
 		}
 		time.Sleep(70 * time.Millisecond)
