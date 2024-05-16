@@ -1,9 +1,31 @@
 package kvraft
 
+import (
+	"log"
+)
+
+// const Debug = false
+
+const Debug = true
+
+func DPrintf(format string, a ...interface{}) (n int, err error) {
+	if Debug {
+		log.SetFlags(log.Lmicroseconds)
+		log.Printf(format, a...)
+	}
+	return
+}
+
 const (
-	OK             = "OK"
-	ErrNoKey       = "ErrNoKey"
-	ErrWrongLeader = "ErrWrongLeader"
+	OK             Err = "OK"
+	ErrNoKey       Err = "ErrNoKey"
+	ErrWrongLeader Err = "ErrWrongLeader"
+)
+const (
+	OPGET    = "Get"
+	OPPUT    = "Put"
+	OPAPPEND = "Append"
+	OPDELETE = "Delete"
 )
 
 type Err string
@@ -15,6 +37,10 @@ type PutAppendArgs struct {
 	// You'll have to add definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+
+	Op      string // "Put" or "Append"
+	UUID    int64
+	PreUUID int64
 }
 
 type PutAppendReply struct {
@@ -24,6 +50,8 @@ type PutAppendReply struct {
 type GetArgs struct {
 	Key string
 	// You'll have to add definitions here.
+	UUID    int64
+	PreUUID int64
 }
 
 type GetReply struct {
